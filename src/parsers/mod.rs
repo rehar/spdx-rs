@@ -328,6 +328,11 @@ fn process_atom_for_packages(
                 package.package_download_location = value.to_string();
             }
         }
+        Atom::FilesAnalyzed(value) => {
+            if let Some(package) = &mut package_in_progress {
+                package.files_analyzed = value.to_lowercase().as_str().parse().ok();
+            }
+        }
         Atom::PackageVerificationCode(value) => {
             if let Some(package) = &mut package_in_progress {
                 package.package_verification_code = Some(value.clone());
