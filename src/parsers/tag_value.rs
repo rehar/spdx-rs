@@ -4,12 +4,14 @@
 
 use std::{num::ParseIntError, str::FromStr};
 
+use strum_macros::AsRefStr;
+
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while},
     character::complete::{alphanumeric0, char, digit1, multispace0, not_line_ending},
     combinator::{map, map_res, opt},
-    error::{ParseError, VerboseError},
+    error::{ErrorKind, ParseError, VerboseError},
     multi::many0,
     sequence::{delimited, preceded, separated_pair, tuple},
     AsChar, IResult,
@@ -17,11 +19,11 @@ use nom::{
 
 use crate::models::{
     Algorithm, AnnotationType, Checksum, ExternalDocumentReference, ExternalPackageReference,
-    ExternalPackageReferenceCategory, FileType, PackageVerificationCode, Relationship,
-    RelationshipType,
+    ExternalPackageReferenceCategory, FileType, PackageVerificationCode, PrimaryPackagePurpose,
+    Relationship, RelationshipType,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, AsRefStr)]
 #[allow(clippy::upper_case_acronyms)]
 pub(super) enum Atom {
     // Document Creation Information
@@ -60,7 +62,7 @@ pub(super) enum Atom {
     ExternalRef(ExternalPackageReference),
     ExternalRefComment(String),
     PackageAttributionText(String),
-    PrimaryPackagePurpose(String),
+    PrimaryPackagePurpose(PrimaryPackagePurpose),
     BuiltDate(String),
     ReleaseDate(String),
     ValidUntilDate(String),
@@ -172,7 +174,10 @@ fn tag_value_to_atom(i: &str) -> IResult<&str, Atom, VerboseError<&str>> {
         )),
         "ExternalRefComment" => Ok((i, Atom::ExternalRefComment(key_value.1.to_string()))),
         "PackageAttributionText" => Ok((i, Atom::PackageAttributionText(key_value.1.to_string()))),
-        "PrimaryPackagePurpose" => Ok((i, Atom::PrimaryPackagePurpose(key_value.1.to_string()))),
+        "PrimaryPackagePurpose" => Ok((
+            i,
+            Atom::PrimaryPackagePurpose(primary_package_purpose(key_value.1)?.1),
+        )),
         "BuiltDate" => Ok((i, Atom::BuiltDate(key_value.1.to_string()))),
         "ReleaseDate" => Ok((i, Atom::ReleaseDate(key_value.1.to_string()))),
         "ValidUntilDate" => Ok((i, Atom::ValidUntilDate(key_value.1.to_string()))),
@@ -222,11 +227,20 @@ fn tag_value_to_atom(i: &str) -> IResult<&str, Atom, VerboseError<&str>> {
         "AnnotationType" => Ok((i, Atom::AnnotationType(annotation_type(key_value.1)?.1))),
         "SPDXREF" => Ok((i, Atom::SPDXREF(key_value.1.to_string()))),
         "AnnotationComment" => Ok((i, Atom::AnnotationComment(key_value.1.to_string()))),
-        v => {
-            dbg!(v);
-            unimplemented!()
-        }
+        _ => unknown_value(i),
     }
+}
+
+/// Reject an unrecognised tag or enum literal.
+///
+/// [`nom::Err::Failure`] rather than [`nom::Err::Error`] on purpose: the atom stream is
+/// built with `many0(alt(..))`, which treats a recoverable error as "the input ended" and
+/// would silently discard the rest of the document.
+fn unknown_value<T>(i: &str) -> IResult<&str, T, VerboseError<&str>> {
+    Err(nom::Err::Failure(VerboseError::from_error_kind(
+        i,
+        ErrorKind::Alt,
+    )))
 }
 
 fn external_document_reference(
@@ -253,8 +267,7 @@ fn annotation_type(i: &str) -> IResult<&str, AnnotationType, VerboseError<&str>>
         Ok((i, value)) => match value {
             "REVIEW" => Ok((i, AnnotationType::Review)),
             "OTHER" => Ok((i, AnnotationType::Other)),
-            // Proper error
-            _ => todo!(),
+            _ => unknown_value(i),
         },
         Err(err) => Err(err),
     }
@@ -274,8 +287,33 @@ fn file_type(i: &str) -> IResult<&str, FileType, VerboseError<&str>> {
             "DOCUMENTATION" => Ok((i, FileType::Documentation)),
             "SPDX" => Ok((i, FileType::SPDX)),
             "OTHER" => Ok((i, FileType::Other)),
-            // Proper error
-            _ => todo!(),
+            _ => unknown_value(i),
+        },
+        Err(err) => Err(err),
+    }
+}
+
+fn primary_package_purpose(i: &str) -> IResult<&str, PrimaryPackagePurpose, VerboseError<&str>> {
+    match ws(not_line_ending)(i) {
+        Ok((i, value)) => match value {
+            "APPLICATION" => Ok((i, PrimaryPackagePurpose::Application)),
+            "FRAMEWORK" => Ok((i, PrimaryPackagePurpose::Framework)),
+            "LIBRARY" => Ok((i, PrimaryPackagePurpose::Library)),
+            "CONTAINER" => Ok((i, PrimaryPackagePurpose::Container)),
+            // Tag-value spells this `OPERATING-SYSTEM`; the JSON serialisation of the same
+            // enum uses `OPERATING_SYSTEM`. Accept both so a document that round-tripped
+            // through JSON still parses.
+            "OPERATING-SYSTEM" | "OPERATING_SYSTEM" => {
+                Ok((i, PrimaryPackagePurpose::OperatingSystem))
+            }
+            "DEVICE" => Ok((i, PrimaryPackagePurpose::Device)),
+            "FIRMWARE" => Ok((i, PrimaryPackagePurpose::Firmware)),
+            "SOURCE" => Ok((i, PrimaryPackagePurpose::Source)),
+            "ARCHIVE" => Ok((i, PrimaryPackagePurpose::Archive)),
+            "FILE" => Ok((i, PrimaryPackagePurpose::File)),
+            "INSTALL" => Ok((i, PrimaryPackagePurpose::Install)),
+            "OTHER" => Ok((i, PrimaryPackagePurpose::Other)),
+            _ => unknown_value(i),
         },
         Err(err) => Err(err),
     }
